@@ -6,9 +6,9 @@ from groq import Groq
 import math
 
 # --- 頁面設定 ---
-st.set_page_config(page_title="轉錄神器 V4 (省力版)", page_icon="⚡")
-st.title("🎙️ 逐字稿轉錄神器 V4.0")
-st.markdown("### 支援：超長音檔 / 低記憶體模式 / 絕對不崩潰")
+st.set_page_config(page_title="轉錄神器 V4.1 (繁體版)", page_icon="🇹🇼")
+st.title("🎙️ 逐字稿轉錄神器 V4.1 (繁體優化版)")
+st.markdown("### 支援：超長音檔 / 低記憶體模式 / 強制繁體中文")
 
 # --- 1. 獲取 API Key ---
 api_key = st.secrets.get("GROQ_API_KEY")
@@ -16,14 +16,14 @@ if not api_key:
     st.error("❌ 錯誤：未設定 GROQ_API_KEY，請至後台 Secrets 設定。")
     st.stop()
 
-# --- 核心功能函數 (改用 FFmpeg 直接處理) ---
+# --- 核心功能函數 ---
 
 def save_uploaded_file(uploaded_file):
     """儲存使用者上傳的檔案"""
     try:
         file_ext = os.path.splitext(uploaded_file.name)[1].lower()
         if file_ext == "":
-            file_ext = ".mp3" # 預設
+            file_ext = ".mp3"
         temp_filename = f"input_source{file_ext}"
         
         with open(temp_filename, "wb") as f:
@@ -45,10 +45,6 @@ def split_audio_ffmpeg(input_file, chunk_time=600):
         os.remove(f)
 
     # 組合 FFmpeg 指令
-    # -i 輸入檔
-    # -f segment -segment_time 600: 每 600 秒切一段
-    # -c:a libmp3lame -b:a 64k -ac 1: 轉成 MP3 64k 單聲道 (標準化格式)
-    # -reset_timestamps 1: 重置時間戳記
     cmd = [
         "ffmpeg",
         "-i", input_file,
@@ -63,10 +59,7 @@ def split_audio_ffmpeg(input_file, chunk_time=600):
     ]
     
     try:
-        # 執行指令
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        
-        # 抓取生成的所有檔案並排序
         chunks = sorted(glob.glob("chunk_*.mp3"))
         return chunks
     except subprocess.CalledProcessError as e:
@@ -77,18 +70,21 @@ def split_audio_ffmpeg(input_file, chunk_time=600):
         return []
 
 def transcribe_with_groq(client, audio_file_path):
+    """呼叫 Groq API 進行轉錄 (加入繁體提示詞)"""
     with open(audio_file_path, "rb") as file:
         transcription = client.audio.transcriptions.create(
             file=(audio_file_path, file.read()),
             model="whisper-large-v3",
             language="zh", 
+            # ▼▼▼ 關鍵修改：加入 prompt 強制引導為繁體中文 ▼▼▼
+            prompt="以下是台灣的繁體中文逐字稿內容。請使用繁體中文 (Traditional Chinese) 進行轉錄，包含專有名詞與上下文，不要使用簡體字。",
             response_format="text"
         )
     return transcription
 
 # --- 主介面 ---
 
-st.info("💡 提示：本版本使用 FFmpeg 硬碟切割技術，專門處理 1-3 小時以上的長音檔，不會再發生記憶體不足錯誤。")
+st.info("💡 提示：本版本已針對「台灣繁體中文」進行優化，並使用低記憶體切割技術，可安心上傳長檔案。")
 
 uploaded_file = st.file_uploader("請選擇 MP3 / M4A 檔案", type=["mp3", "m4a", "wav"])
 
@@ -102,7 +98,7 @@ if uploaded_file and st.button("🚀 開始轉錄"):
         status.info("⏳ 1/3 正在讀取檔案...")
         source_file = save_uploaded_file(uploaded_file)
         
-        # 2. 切割 (使用新技術)
+        # 2. 切割
         status.info("✂️ 2/3 正在使用 FFmpeg 進行低耗能切割 (請稍候)...")
         chunks = split_audio_ffmpeg(source_file)
         
@@ -110,7 +106,7 @@ if uploaded_file and st.button("🚀 開始轉錄"):
             st.error("切割失敗，無法產生音訊片段。")
             st.stop()
             
-        # 刪除原始大檔釋放空間
+        # 刪除原始大檔
         if os.path.exists(source_file):
             os.remove(source_file)
         
@@ -119,7 +115,7 @@ if uploaded_file and st.button("🚀 開始轉錄"):
         total = len(chunks)
         
         for i, chunk in enumerate(chunks):
-            status.info(f"🎙️ 3/3 AI 正在聽寫中... (進度 {i+1}/{total})")
+            status.info(f"🎙️ 3/3 AI 正在聽寫中 (繁體優化)... (進度 {i+1}/{total})")
             progress.progress((i)/total)
             
             try:
@@ -128,7 +124,6 @@ if uploaded_file and st.button("🚀 開始轉錄"):
             except Exception as e:
                 full_text += f"\n[第 {i+1} 段轉錄失敗: {e}]\n"
             
-            # 處理完馬上刪
             if os.path.exists(chunk):
                 os.remove(chunk)
         
@@ -137,7 +132,7 @@ if uploaded_file and st.button("🚀 開始轉錄"):
         
         # 顯示結果
         st.text_area("轉錄逐字稿", full_text, height=400)
-        st.download_button("📥 下載 .txt 文字檔", full_text, file_name="transcript.txt")
+        st.download_button("📥 下載 .txt 文字檔", full_text, file_name="transcript_tc.txt")
 
     except Exception as e:
         st.error(f"發生未預期的錯誤: {e}")
