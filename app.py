@@ -6,24 +6,23 @@ from pydub import AudioSegment
 import math
 
 # --- 頁面設定 ---
-st.set_page_config(page_title="YT 台灣直播轉錄 (Groq版)", page_icon="🎙️")
-st.title("🎙️ YouTube 直播轉錄神器")
-st.markdown("### 支援：2小時長影片 / 台語混雜 / 不公開影片")
-st.info("💡 程式設計師-琮程 提示：若出現 403 錯誤，請展開下方「進階設定」上傳 cookies.txt")
+st.set_page_config(page_title="YT 台灣直播轉錄 (防封鎖版)", page_icon="🛡️")
+st.title("🛡️ YouTube 直播轉錄神器 (V2.0)")
+st.markdown("### 支援：2小時長影片 / 台語混雜 / 自動繞過 403")
+st.info("💡 程式設計師-琮程 提示：V2.0 版已加入 Android 偽裝模式。若仍失敗，請使用下方的 Cookies 上傳功能。")
 
 # --- 獲取 API Key ---
 api_key = st.secrets.get("GROQ_API_KEY")
 if not api_key:
     api_key = st.text_input("未偵測到內建 Key，請輸入 Groq API Key:", type="password")
 
-# --- 進階設定：Cookies 上傳 ---
-with st.expander("🔧 進階設定 (解決 403 下載失敗錯誤)"):
+# --- 進階設定：Cookies 上傳 (備用方案) ---
+with st.expander("🔧 進階設定 (如果還是 403 失敗，請點這裡)"):
     st.markdown("""
-    如果下載失敗顯示 `HTTP Error 403: Forbidden`，代表 YouTube 擋住了伺服器 IP。
-    請上傳你的 **cookies.txt** 來驗證身分。
-    [如何取得 cookies.txt?](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpcafejbcbkfd) (請使用擴充功能匯出)
+    如果自動偽裝失效，請上傳你的 **cookies.txt** 來驗證身分。
+    [如何取得 cookies.txt?](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpcafejbcbkfd) (請使用電腦版 Chrome 擴充功能匯出)
     """)
-    cookies_file = st.file_uploader("上傳 cookies.txt", type=["txt"])
+    cookies_file = st.file_uploader("上傳 cookies.txt (選填)", type=["txt"])
 
 # --- 核心功能函數 ---
 
@@ -43,10 +42,16 @@ def download_audio(url, cookie_path=None):
         }],
         'quiet': True,
         'no_warnings': True,
-        # 關鍵修正：如果有上傳 cookies，就使用它
+        # --- V2.0 關鍵更新：偽裝成 Android 客戶端 ---
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'web'], # 優先使用 Android API 繞過封鎖
+            }
+        },
+        # 如果有上傳 cookies 就使用，沒有就設為 None
         'cookiefile': cookie_path if cookie_path else None,
-        # 偽裝成瀏覽器
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        # 額外的 Header 偽裝
+        'user_agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
     }
     
     try:
@@ -54,8 +59,7 @@ def download_audio(url, cookie_path=None):
             ydl.download([url])
         return f"{output_filename}.mp3"
     except Exception as e:
-        # 捕捉更詳細的錯誤
-        st.error(f"下載失敗: {str(e)}")
+        st.error(f"下載失敗 (詳細錯誤): {str(e)}")
         return None
 
 def split_audio(file_path, chunk_length_ms=600000): 
@@ -93,23 +97,27 @@ def transcribe_with_groq(client, audio_file_path):
 url = st.text_input("請貼上 YouTube 影片網址", placeholder="https://youtu.be/...")
 
 if st.button("🚀 開始轉錄", type="primary"):
-    if not api_key or not url:
-        st.warning("請確認 API Key 與網址皆已輸入！")
+    if not api_key:
+        st.warning("請先設定 API Key！")
+        st.stop()
+    if not url:
+        st.warning("請輸入網址！")
         st.stop()
 
     client = Groq(api_key=api_key)
     status_area = st.empty()
     
-    # 處理 Cookies 檔案路徑
+    # 處理 Cookies 檔案
     cookie_path = None
     if cookies_file:
         with open("cookies.txt", "wb") as f:
             f.write(cookies_file.getbuffer())
         cookie_path = "cookies.txt"
+        st.toast("已載入 Cookies 憑證！", icon="🍪")
 
     try:
-        # 1. 下載 (帶入 cookies)
-        status_area.info("⏳ 正在下載音訊 (若失敗請檢查 cookies)...")
+        # 1. 下載
+        status_area.info("⏳ 正在下載音訊 (V2.0 Android 模式啟動中)...")
         mp3_file = download_audio(url, cookie_path)
         
         if mp3_file:
@@ -137,9 +145,9 @@ if st.button("🚀 開始轉錄", type="primary"):
             st.download_button("📥 下載文字檔", full_transcript, file_name="transcript.txt")
             status_area.empty()
             
-            # 清理 cookies 檔案以策安全
+            # 清理
             if os.path.exists("cookies.txt"):
                 os.remove("cookies.txt")
 
     except Exception as e:
-        st.error(f"發生錯誤: {str(e)}")
+        st.error(f"系統錯誤: {str(e)}")
