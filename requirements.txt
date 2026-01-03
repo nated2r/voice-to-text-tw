@@ -3,4 +3,4 @@ yt-dlp
 groq
 
 pydub
-pyaudioop
+
