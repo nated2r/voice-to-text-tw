@@ -9,20 +9,27 @@ import math
 st.set_page_config(page_title="YT 台灣直播轉錄 (Groq版)", page_icon="🎙️")
 st.title("🎙️ YouTube 直播轉錄神器")
 st.markdown("### 支援：2小時長影片 / 台語混雜 / 不公開影片")
-st.info("💡 程式設計師-琮程 提示：首次啟動可能需要幾分鐘安裝環境。")
+st.info("💡 程式設計師-琮程 提示：若出現 403 錯誤，請展開下方「進階設定」上傳 cookies.txt")
 
 # --- 獲取 API Key ---
-# 優先從 Streamlit Secrets 讀取，如果沒有則顯示輸入框
 api_key = st.secrets.get("GROQ_API_KEY")
 if not api_key:
     api_key = st.text_input("未偵測到內建 Key，請輸入 Groq API Key:", type="password")
 
+# --- 進階設定：Cookies 上傳 ---
+with st.expander("🔧 進階設定 (解決 403 下載失敗錯誤)"):
+    st.markdown("""
+    如果下載失敗顯示 `HTTP Error 403: Forbidden`，代表 YouTube 擋住了伺服器 IP。
+    請上傳你的 **cookies.txt** 來驗證身分。
+    [如何取得 cookies.txt?](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpcafejbcbkfd) (請使用擴充功能匯出)
+    """)
+    cookies_file = st.file_uploader("上傳 cookies.txt", type=["txt"])
+
 # --- 核心功能函數 ---
 
-def download_audio(url):
-    """下載 YT 影片並轉為 MP3 (低位元率以節省體積)"""
+def download_audio(url, cookie_path=None):
+    """下載 YT 影片並轉為 MP3"""
     output_filename = "temp_audio"
-    # 清理舊檔
     if os.path.exists(f"{output_filename}.mp3"):
         os.remove(f"{output_filename}.mp3")
         
@@ -32,10 +39,14 @@ def download_audio(url):
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
-            'preferredquality': '64', # 64k 對語音辨識已足夠，且處理速度更快
+            'preferredquality': '64',
         }],
         'quiet': True,
         'no_warnings': True,
+        # 關鍵修正：如果有上傳 cookies，就使用它
+        'cookiefile': cookie_path if cookie_path else None,
+        # 偽裝成瀏覽器
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     }
     
     try:
@@ -43,11 +54,11 @@ def download_audio(url):
             ydl.download([url])
         return f"{output_filename}.mp3"
     except Exception as e:
-        st.error(f"下載失敗，請確認連結是否有效: {e}")
+        # 捕捉更詳細的錯誤
+        st.error(f"下載失敗: {str(e)}")
         return None
 
-def split_audio(file_path, chunk_length_ms=600000): # 10分鐘一段
-    """將音檔切割成小片段以符合 Groq 25MB 限制"""
+def split_audio(file_path, chunk_length_ms=600000): 
     audio = AudioSegment.from_mp3(file_path)
     chunks = []
     duration_ms = len(audio)
@@ -69,35 +80,37 @@ def split_audio(file_path, chunk_length_ms=600000): # 10分鐘一段
     return chunks
 
 def transcribe_with_groq(client, audio_file_path):
-    """呼叫 Groq API"""
     with open(audio_file_path, "rb") as file:
         transcription = client.audio.transcriptions.create(
             file=(audio_file_path, file.read()),
             model="whisper-large-v3",
-            language="zh", # 強制辨識為中文 (包含台語上下文)
+            language="zh", 
             response_format="text"
         )
     return transcription
 
 # --- 主執行邏輯 ---
-url = st.text_input("請貼上 YouTube 影片網址 (支援不公開連結)", placeholder="https://youtu.be/...")
+url = st.text_input("請貼上 YouTube 影片網址", placeholder="https://youtu.be/...")
 
 if st.button("🚀 開始轉錄", type="primary"):
-    if not api_key:
-        st.warning("請先輸入 API Key！")
-        st.stop()
-        
-    if not url:
-        st.warning("請輸入影片網址！")
+    if not api_key or not url:
+        st.warning("請確認 API Key 與網址皆已輸入！")
         st.stop()
 
     client = Groq(api_key=api_key)
     status_area = st.empty()
     
+    # 處理 Cookies 檔案路徑
+    cookie_path = None
+    if cookies_file:
+        with open("cookies.txt", "wb") as f:
+            f.write(cookies_file.getbuffer())
+        cookie_path = "cookies.txt"
+
     try:
-        # 1. 下載
-        status_area.info("⏳ 正在下載音訊 (長影片約需 1-3 分鐘)...")
-        mp3_file = download_audio(url)
+        # 1. 下載 (帶入 cookies)
+        status_area.info("⏳ 正在下載音訊 (若失敗請檢查 cookies)...")
+        mp3_file = download_audio(url, cookie_path)
         
         if mp3_file:
             # 2. 切割
@@ -110,24 +123,23 @@ if st.button("🚀 開始轉錄", type="primary"):
             
             # 3. 轉錄
             for idx, chunk_file in enumerate(chunks):
-                progress_bar.progress((idx) / total_chunks, text=f"🎙️ 正在轉錄第 {idx+1}/{total_chunks} 部分 (Groq V3)...")
+                progress_bar.progress((idx) / total_chunks, text=f"🎙️ 正在轉錄第 {idx+1}/{total_chunks} 部分...")
                 text = transcribe_with_groq(client, chunk_file)
                 full_transcript += text + "\n"
-                os.remove(chunk_file) # 處理完馬上刪除釋放空間
+                os.remove(chunk_file)
             
             progress_bar.progress(1.0, text="✅ 處理完成！")
-            os.remove(mp3_file) # 刪除原始檔
+            os.remove(mp3_file)
             
-            # 4. 結果顯示
+            # 4. 結果
             st.success("轉錄成功！")
-            st.text_area("轉錄內容預覽", full_transcript, height=300)
-            st.download_button(
-                label="📥 下載完整文字檔 (.txt)",
-                data=full_transcript,
-                file_name="transcript.txt",
-                mime="text/plain"
-            )
+            st.text_area("轉錄內容", full_transcript, height=300)
+            st.download_button("📥 下載文字檔", full_transcript, file_name="transcript.txt")
             status_area.empty()
+            
+            # 清理 cookies 檔案以策安全
+            if os.path.exists("cookies.txt"):
+                os.remove("cookies.txt")
 
     except Exception as e:
-        st.error(f"發生未預期的錯誤: {str(e)}")
+        st.error(f"發生錯誤: {str(e)}")
