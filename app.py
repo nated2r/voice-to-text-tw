@@ -6,71 +6,49 @@ from pydub import AudioSegment
 import math
 
 # --- 頁面設定 ---
-st.set_page_config(page_title="YT 台灣直播轉錄 (防封鎖版)", page_icon="🛡️")
-st.title("🛡️ YouTube 直播轉錄神器 (V2.0)")
-st.markdown("### 支援：2小時長影片 / 台語混雜 / 自動繞過 403")
-st.info("💡 程式設計師-琮程 提示：V2.0 版已加入 Android 偽裝模式。若仍失敗，請使用下方的 Cookies 上傳功能。")
+st.set_page_config(page_title="轉錄神器 V3 (上傳版)", page_icon="📂")
+st.title("🎙️ 逐字稿轉錄神器 (檔案上傳版)")
+st.markdown("### 支援：MP3/M4A 音檔直接上傳 (推薦使用)")
 
-# --- 獲取 API Key ---
+# --- 1. 獲取 API Key ---
 api_key = st.secrets.get("GROQ_API_KEY")
 if not api_key:
-    api_key = st.text_input("未偵測到內建 Key，請輸入 Groq API Key:", type="password")
-
-# --- 進階設定：Cookies 上傳 (備用方案) ---
-with st.expander("🔧 進階設定 (如果還是 403 失敗，請點這裡)"):
-    st.markdown("""
-    如果自動偽裝失效，請上傳你的 **cookies.txt** 來驗證身分。
-    [如何取得 cookies.txt?](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpcafejbcbkfd) (請使用電腦版 Chrome 擴充功能匯出)
-    """)
-    cookies_file = st.file_uploader("上傳 cookies.txt (選填)", type=["txt"])
+    st.error("❌ 錯誤：未設定 GROQ_API_KEY，請至後台 Secrets 設定。")
+    st.stop()
 
 # --- 核心功能函數 ---
 
-def download_audio(url, cookie_path=None):
-    """下載 YT 影片並轉為 MP3"""
-    output_filename = "temp_audio"
-    if os.path.exists(f"{output_filename}.mp3"):
-        os.remove(f"{output_filename}.mp3")
-        
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': output_filename,
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '64',
-        }],
-        'quiet': True,
-        'no_warnings': True,
-        # --- V2.0 關鍵更新：偽裝成 Android 客戶端 ---
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'web'], # 優先使用 Android API 繞過封鎖
-            }
-        },
-        # 如果有上傳 cookies 就使用，沒有就設為 None
-        'cookiefile': cookie_path if cookie_path else None,
-        # 額外的 Header 偽裝
-        'user_agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-    }
-    
+def save_uploaded_file(uploaded_file):
+    """儲存使用者上傳的檔案到暫存區"""
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-        return f"{output_filename}.mp3"
+        # 取得副檔名
+        file_ext = os.path.splitext(uploaded_file.name)[1].lower()
+        temp_filename = f"temp_input{file_ext}"
+        
+        with open(temp_filename, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        
+        return temp_filename
     except Exception as e:
-        st.error(f"下載失敗 (詳細錯誤): {str(e)}")
+        st.error(f"檔案儲存失敗: {e}")
         return None
 
+def convert_to_mp3(input_file):
+    """將任意音訊轉為標準 MP3 (16kHz 單聲道，最適合 Whisper)"""
+    output_filename = "converted_audio.mp3"
+    audio = AudioSegment.from_file(input_file)
+    # 轉成單聲道、16000Hz 以節省 Groq 傳輸流量並加快速度
+    audio = audio.set_channels(1).set_frame_rate(16000)
+    audio.export(output_filename, format="mp3", bitrate="64k")
+    return output_filename
+
 def split_audio(file_path, chunk_length_ms=600000): 
+    # 10 分鐘切一段 (600,000 ms)
     audio = AudioSegment.from_mp3(file_path)
     chunks = []
     duration_ms = len(audio)
     total_chunks = math.ceil(duration_ms / chunk_length_ms)
     
-    progress_text = "正在切割音檔..."
-    my_bar = st.progress(0, text=progress_text)
-
     for i in range(total_chunks):
         start_time = i * chunk_length_ms
         end_time = min((i + 1) * chunk_length_ms, duration_ms)
@@ -78,9 +56,6 @@ def split_audio(file_path, chunk_length_ms=600000):
         chunk_name = f"chunk_{i}.mp3"
         chunk.export(chunk_name, format="mp3")
         chunks.append(chunk_name)
-        my_bar.progress((i + 1) / total_chunks, text=f"正在切割第 {i+1}/{total_chunks} 段")
-    
-    my_bar.empty()
     return chunks
 
 def transcribe_with_groq(client, audio_file_path):
@@ -93,61 +68,53 @@ def transcribe_with_groq(client, audio_file_path):
         )
     return transcription
 
-# --- 主執行邏輯 ---
-url = st.text_input("請貼上 YouTube 影片網址", placeholder="https://youtu.be/...")
+# --- 主介面 ---
 
-if st.button("🚀 開始轉錄", type="primary"):
-    if not api_key:
-        st.warning("請先設定 API Key！")
-        st.stop()
-    if not url:
-        st.warning("請輸入網址！")
-        st.stop()
+st.info("💡 提示：請上傳 MP3 或 M4A 檔案。雖然我們解除了 200MB 限制，但建議檔案不要超過 500MB。")
 
+# 這裡就是你要的「檔案上傳按鈕」
+uploaded_file = st.file_uploader("請選擇音訊檔案", type=["mp3", "m4a", "wav"])
+
+if uploaded_file and st.button("🚀 開始轉錄"):
     client = Groq(api_key=api_key)
-    status_area = st.empty()
+    status = st.empty()
+    progress = st.progress(0, text="準備中...")
     
-    # 處理 Cookies 檔案
-    cookie_path = None
-    if cookies_file:
-        with open("cookies.txt", "wb") as f:
-            f.write(cookies_file.getbuffer())
-        cookie_path = "cookies.txt"
-        st.toast("已載入 Cookies 憑證！", icon="🍪")
-
     try:
-        # 1. 下載
-        status_area.info("⏳ 正在下載音訊 (V2.0 Android 模式啟動中)...")
-        mp3_file = download_audio(url, cookie_path)
+        # 1. 存檔
+        status.info("⏳ 1/4 正在讀取檔案...")
+        temp_file = save_uploaded_file(uploaded_file)
         
-        if mp3_file:
-            # 2. 切割
-            status_area.info("✂️ 正在處理音訊切片...")
-            chunks = split_audio(mp3_file)
-            
-            full_transcript = ""
-            total_chunks = len(chunks)
-            progress_bar = st.progress(0, text="AI 轉錄中...")
-            
-            # 3. 轉錄
-            for idx, chunk_file in enumerate(chunks):
-                progress_bar.progress((idx) / total_chunks, text=f"🎙️ 正在轉錄第 {idx+1}/{total_chunks} 部分...")
-                text = transcribe_with_groq(client, chunk_file)
-                full_transcript += text + "\n"
-                os.remove(chunk_file)
-            
-            progress_bar.progress(1.0, text="✅ 處理完成！")
+        # 2. 轉檔 (標準化)
+        status.info("⚙️ 2/4 正在最佳化音訊格式...")
+        mp3_file = convert_to_mp3(temp_file)
+        os.remove(temp_file) # 刪掉原始檔省空間
+        
+        # 3. 切割
+        status.info("✂️ 3/4 正在切割音訊...")
+        chunks = split_audio(mp3_file)
+        
+        # 4. 轉錄
+        full_text = ""
+        total = len(chunks)
+        
+        for i, chunk in enumerate(chunks):
+            status.info(f"🎙️ 4/4 AI 正在聽寫中... (進度 {i+1}/{total})")
+            progress.progress((i)/total)
+            text = transcribe_with_groq(client, chunk)
+            full_text += text + "\n"
+            os.remove(chunk) # 處理完馬上刪，省空間
+        
+        progress.progress(1.0)
+        status.success("🎉 轉錄完成！")
+        
+        # 顯示結果
+        st.text_area("轉錄逐字稿", full_text, height=400)
+        st.download_button("📥 下載 .txt 文字檔", full_text, file_name="transcript.txt")
+        
+        # 最後清理
+        if os.path.exists(mp3_file):
             os.remove(mp3_file)
-            
-            # 4. 結果
-            st.success("轉錄成功！")
-            st.text_area("轉錄內容", full_transcript, height=300)
-            st.download_button("📥 下載文字檔", full_transcript, file_name="transcript.txt")
-            status_area.empty()
-            
-            # 清理
-            if os.path.exists("cookies.txt"):
-                os.remove("cookies.txt")
 
     except Exception as e:
-        st.error(f"系統錯誤: {str(e)}")
+        st.error(f"發生錯誤: {e}")
