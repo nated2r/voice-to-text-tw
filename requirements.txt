@@ -1,4 +1,6 @@
 streamlit
 yt-dlp
 groq
+
 pydub
+pyaudioop
